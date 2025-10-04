@@ -7,17 +7,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.dummy import DummyClassifier
 import joblib
-from dotenv import load_dotenv
 
 # ------------------------------
-# 1️⃣ Cargar variables de entorno
+# 1️⃣ Cargar variables de entorno (Railway)
 # ------------------------------
-load_dotenv()  # opcional en Railway, útil en local
-
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB = os.getenv("MONGO_DB", "RetoMate")
-MODEL_PATH = os.getenv("MODEL_PATH", "modelo_dificultad.pkl")
-PORT = int(os.getenv("PORT", 3000))
+MONGO_URI = os.environ.get("MONGO_URI")
+MONGO_DB = os.environ.get("MONGO_DB", "RetoMate")
+MODEL_PATH = os.environ.get("MODEL_PATH", "modelo_dificultad.pkl")
+PORT = int(os.environ.get("PORT", 3000))
 
 if not MONGO_URI:
     raise ValueError("❌ Debes definir la variable MONGO_URI en tu entorno")
