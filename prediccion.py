@@ -1,117 +1,122 @@
-import pandas as pd
+# prediccion.py
+import os
+from flask import Flask, request, jsonify
 from pymongo import MongoClient
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
-from flask import Flask, request, jsonify
+from sklearn.dummy import DummyClassifier
 import joblib
-import os
-from dotenv import load_dotenv  
+from dotenv import load_dotenv
 
+# ------------------------------
+# 1️⃣ Cargar variables de entorno
+# ------------------------------
+load_dotenv()  # opcional en Railway, útil en local
 
-load_dotenv()
-
-# 📌 Conexión a MongoDB usando .env
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB = os.getenv("MONGO_DB", "RetoMate")
+MODEL_PATH = os.getenv("MODEL_PATH", "modelo_dificultad.pkl")
+PORT = int(os.getenv("PORT", 3000))
 
+if not MONGO_URI:
+    raise ValueError("❌ Debes definir la variable MONGO_URI en tu entorno")
+
+# ------------------------------
+# 2️⃣ Conexión a MongoDB
+# ------------------------------
 client = MongoClient(MONGO_URI)
 db = client[MONGO_DB]
 progreso_col = db["progresos"]
 tareas_col = db["tareas"]
 
-# 🧩 Extraer y combinar datos
-progresos = list(progreso_col.find())
-tareas = {str(t["_id"]): t for t in tareas_col.find()}
+# ------------------------------
+# 3️⃣ Preparar datos y entrenar modelo (si no existe)
+# ------------------------------
+def entrenar_modelo():
+    progresos = list(progreso_col.find())
+    tareas = {str(t["_id"]): t for t in tareas_col.find()}
 
-# 🔄 Preparar dataset con inferencia de dificultad_objetivo
-data = []
-dificultad_map = {"facil": 0, "media": 1, "dificil": 2}
-inv_map = {v: k for k, v in dificultad_map.items()}
+    data = []
+    dificultad_map = {"facil": 0, "media": 1, "dificil": 2}
 
-for p in progresos:
-    tarea = tareas.get(str(p["id_tarea"]))
-    if tarea:
-        dificultad_actual = tarea.get("dificultad", "media")
-        dificultad_actual = dificultad_actual.lower().strip()
-        if dificultad_actual == "fácil":
-            dificultad_actual = "facil"
-        elif dificultad_actual == "difícil":
-            dificultad_actual = "dificil"
-            
-        dificultad_num = dificultad_map.get(dificultad_actual, 1)
+    for p in progresos:
+        tarea = tareas.get(str(p["id_tarea"]))
+        if tarea:
+            dificultad_actual = tarea.get("dificultad", "media").lower().strip()
+            if dificultad_actual == "fácil": dificultad_actual = "facil"
+            elif dificultad_actual == "difícil": dificultad_actual = "dificil"
+            dificultad_num = dificultad_map.get(dificultad_actual, 1)
 
-        if "puntaje" not in p or "correcto" not in p:
-            continue
+            if "puntaje" not in p or "correcto" not in p:
+                continue
 
-        if p["correcto"]:
-            dificultad_objetivo = min(dificultad_num + 1, 2)
-        else:
-            dificultad_objetivo = max(dificultad_num - 1, 0)
+            dificultad_objetivo = min(dificultad_num + 1, 2) if p["correcto"] else max(dificultad_num - 1, 0)
 
-        data.append({
-            "puntaje": p["puntaje"],
-            "correcto": int(p["correcto"]),
-            "dificultad_actual": dificultad_num,
-            "dificultad_objetivo": dificultad_objetivo
-        })
+            data.append({
+                "puntaje": p["puntaje"],
+                "correcto": int(p["correcto"]),
+                "dificultad_actual": dificultad_num,
+                "dificultad_objetivo": dificultad_objetivo
+            })
 
-df = pd.DataFrame(data)
-df.dropna(inplace=True)
+    df = pd.DataFrame(data)
+    df.dropna(inplace=True)
 
-# 🧠 Entrenamiento / Dummy si no hay datos
-modelo_path = "modelo_dificultad.pkl"
-if df.shape[0] >= 10:
-    X = df[["puntaje", "correcto", "dificultad_actual"]]
-    y = df["dificultad_objetivo"]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    clf = DecisionTreeClassifier()
-    clf.fit(X_train, y_train)
-    joblib.dump(clf, modelo_path)
+    if df.shape[0] >= 10:
+        X = df[["puntaje", "correcto", "dificultad_actual"]]
+        y = df["dificultad_objetivo"]
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        clf = DecisionTreeClassifier()
+        clf.fit(X_train, y_train)
+    else:
+        clf = DummyClassifier(strategy="most_frequent")
+        clf.fit([[0,0,1]], [1])
+
+    joblib.dump(clf, MODEL_PATH)
+    return clf
+
+# Cargar modelo existente o entrenar
+if os.path.exists(MODEL_PATH):
+    modelo = joblib.load(MODEL_PATH)
 else:
-    from sklearn.dummy import DummyClassifier
-    clf = DummyClassifier(strategy="most_frequent")
-    clf.fit([[0,0,1]], [1])
-    joblib.dump(clf, modelo_path)
+    modelo = entrenar_modelo()
 
-# 🌐 Servidor Flask
+# ------------------------------
+# 4️⃣ Servidor Flask
+# ------------------------------
 app = Flask(__name__)
-modelo = joblib.load(modelo_path)
 
 @app.route("/predecir", methods=["POST"])
 def predecir_api():
     data = request.get_json()
-    if not data or not all(k in data for k in ("puntaje", "correcto", "dificultad_actual")):
-        return jsonify({"error": "Faltan campos requeridos (puntaje, correcto, dificultad_actual)"}), 400
+    required_fields = ("puntaje", "correcto", "dificultad_actual")
+    if not data or not all(k in data for k in required_fields):
+        return jsonify({"error": f"Faltan campos requeridos {required_fields}"}), 400
 
     dificultad_map = {"facil": 0, "media": 1, "dificil": 2}
-    
     dificultad_actual_raw = data["dificultad_actual"]
+
     if isinstance(dificultad_actual_raw, int):
         dificultad_actual_num = dificultad_actual_raw
     else:
-        dificultad_str = str(dificultad_actual_raw).strip().lower()
-        if dificultad_str in ["fácil", "facil"]:
-            dificultad_str = "facil"
-        elif dificultad_str in ["difícil", "dificil"]:
-            dificultad_str = "dificil"
-        dificultad_actual_num = dificultad_map.get(dificultad_str, 1)
+        d_str = str(dificultad_actual_raw).lower().strip()
+        if d_str in ["fácil","facil"]: d_str="facil"
+        elif d_str in ["difícil","dificil"]: d_str="dificil"
+        dificultad_actual_num = dificultad_map.get(d_str,1)
 
-    entrada = [[
-        float(data.get("puntaje", 0)),
-        1 if data.get("correcto") else 0,
-        int(dificultad_actual_num)
-    ]]
-    
+    entrada = [[float(data.get("puntaje",0)), 1 if data.get("correcto") else 0, int(dificultad_actual_num)]]
+
     try:
         pred = modelo.predict(entrada)[0]
     except:
-        if data.get("correcto"):
-            pred = min(dificultad_actual_num + 1, 2)
-        else:
-            pred = max(dificultad_actual_num - 1, 0)
+        pred = min(dificultad_actual_num+1,2) if data.get("correcto") else max(dificultad_actual_num-1,0)
 
     etiquetas = {0: "facil", 1: "media", 2: "dificil"}
     return jsonify({"dificultad_sugerida": etiquetas.get(int(pred), "media")})
 
+# ------------------------------
+# 5️⃣ Ejecutar servidor
+# ------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000)
+    app.run(host="0.0.0.0", port=PORT)
