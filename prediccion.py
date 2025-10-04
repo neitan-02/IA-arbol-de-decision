@@ -5,10 +5,17 @@ from sklearn.tree import DecisionTreeClassifier
 from flask import Flask, request, jsonify
 import joblib
 import os
+from dotenv import load_dotenv  
 
-# 📌 Conexión a MongoDB
-client = MongoClient("mongodb://localhost:27017")
-db = client["RetoMate"]
+
+load_dotenv()
+
+# 📌 Conexión a MongoDB usando .env
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB = os.getenv("MONGO_DB", "RetoMate")
+
+client = MongoClient(MONGO_URI)
+db = client[MONGO_DB]
 progreso_col = db["progresos"]
 tareas_col = db["tareas"]
 
@@ -18,7 +25,6 @@ tareas = {str(t["_id"]): t for t in tareas_col.find()}
 
 # 🔄 Preparar dataset con inferencia de dificultad_objetivo
 data = []
-# 🎯 USAR "dificil" SIN ACENTO
 dificultad_map = {"facil": 0, "media": 1, "dificil": 2}
 inv_map = {v: k for k, v in dificultad_map.items()}
 
@@ -26,7 +32,6 @@ for p in progresos:
     tarea = tareas.get(str(p["id_tarea"]))
     if tarea:
         dificultad_actual = tarea.get("dificultad", "media")
-        # 🎯 Normalizar a minúsculas sin acentos
         dificultad_actual = dificultad_actual.lower().strip()
         if dificultad_actual == "fácil":
             dificultad_actual = "facil"
@@ -38,7 +43,6 @@ for p in progresos:
         if "puntaje" not in p or "correcto" not in p:
             continue
 
-        # 🧠 inferencia de siguiente dificultad
         if p["correcto"]:
             dificultad_objetivo = min(dificultad_num + 1, 2)
         else:
@@ -54,7 +58,7 @@ for p in progresos:
 df = pd.DataFrame(data)
 df.dropna(inplace=True)
 
-# Si no hay datos suficientes, crear un modelo por defecto simple
+# 🧠 Entrenamiento / Dummy si no hay datos
 modelo_path = "modelo_dificultad.pkl"
 if df.shape[0] >= 10:
     X = df[["puntaje", "correcto", "dificultad_actual"]]
@@ -79,20 +83,17 @@ def predecir_api():
     if not data or not all(k in data for k in ("puntaje", "correcto", "dificultad_actual")):
         return jsonify({"error": "Faltan campos requeridos (puntaje, correcto, dificultad_actual)"}), 400
 
-    
     dificultad_map = {"facil": 0, "media": 1, "dificil": 2}
     
     dificultad_actual_raw = data["dificultad_actual"]
     if isinstance(dificultad_actual_raw, int):
         dificultad_actual_num = dificultad_actual_raw
     else:
-        # 🎯 Normalizar entrada
         dificultad_str = str(dificultad_actual_raw).strip().lower()
         if dificultad_str in ["fácil", "facil"]:
             dificultad_str = "facil"
         elif dificultad_str in ["difícil", "dificil"]:
             dificultad_str = "dificil"
-            
         dificultad_actual_num = dificultad_map.get(dificultad_str, 1)
 
     entrada = [[
@@ -103,14 +104,12 @@ def predecir_api():
     
     try:
         pred = modelo.predict(entrada)[0]
-    except Exception as e:
-        # fallback simple
+    except:
         if data.get("correcto"):
             pred = min(dificultad_actual_num + 1, 2)
         else:
             pred = max(dificultad_actual_num - 1, 0)
 
- 
     etiquetas = {0: "facil", 1: "media", 2: "dificil"}
     return jsonify({"dificultad_sugerida": etiquetas.get(int(pred), "media")})
 
