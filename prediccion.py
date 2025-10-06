@@ -45,7 +45,11 @@ def entrenar_modelo():
             if "puntaje" not in p or "correcto" not in p:
                 continue
 
-            dificultad_objetivo = min(dificultad_num + 1, 2) if p["correcto"] else max(dificultad_num - 1, 0)
+            # LÓGICA CORREGIDA: Si es correcto sube, si es incorrecto baja
+            if p["correcto"]:
+                dificultad_objetivo = min(dificultad_num + 1, 2)  # Sube hasta difícil
+            else:
+                dificultad_objetivo = max(dificultad_num - 1, 0)  # Baja hasta fácil
 
             data.append({
                 "puntaje": p["puntaje"],
@@ -60,20 +64,29 @@ def entrenar_modelo():
     if df.shape[0] >= 10:
         X = df[["puntaje", "correcto", "dificultad_actual"]]
         y = df["dificultad_objetivo"]
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-        clf = DecisionTreeClassifier()
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        clf = DecisionTreeClassifier(random_state=42)
         clf.fit(X_train, y_train)
+        print(f"✅ Modelo entrenado con {len(data)} muestras")
     else:
-        clf = DummyClassifier(strategy="most_frequent")
+        clf = DummyClassifier(strategy="most_frequent", random_state=42)
         clf.fit([[0,0,1]], [1])
+        print(f"⚠️ Modelo dummy - solo {len(data)} muestras")
 
     joblib.dump(clf, MODEL_PATH)
     return clf
 
 # Cargar modelo existente o entrenar
+print("🔄 Cargando modelo...")
 if os.path.exists(MODEL_PATH):
-    modelo = joblib.load(MODEL_PATH)
+    try:
+        modelo = joblib.load(MODEL_PATH)
+        print("✅ Modelo cargado desde archivo")
+    except:
+        print("❌ Error cargando modelo, reentrenando...")
+        modelo = entrenar_modelo()
 else:
+    print("📊 Modelo no existe, entrenando...")
     modelo = entrenar_modelo()
 
 # ------------------------------
@@ -97,20 +110,40 @@ def predecir_api():
         d_str = str(dificultad_actual_raw).lower().strip()
         if d_str in ["fácil","facil"]: d_str="facil"
         elif d_str in ["difícil","dificil"]: d_str="dificil"
-        dificultad_actual_num = dificultad_map.get(d_str,1)
+        dificultad_actual_num = dificultad_map.get(d_str, 1)
 
     entrada = [[float(data.get("puntaje",0)), 1 if data.get("correcto") else 0, int(dificultad_actual_num)]]
 
     try:
         pred = modelo.predict(entrada)[0]
-    except:
-        pred = min(dificultad_actual_num+1,2) if data.get("correcto") else max(dificultad_actual_num-1,0)
+        print(f"🎯 Predicción: {dificultad_actual_num} -> {pred} (correcto: {data.get('correcto')})")
+    except Exception as e:
+        print(f"⚠️ Error en predicción: {e}, usando lógica de respaldo")
+        # LÓGICA DE RESPALDO MEJORADA
+        if data.get("correcto"):
+            pred = min(dificultad_actual_num + 1, 2)  # Sube nivel
+        else:
+            pred = max(dificultad_actual_num - 1, 0)  # Baja nivel
 
     etiquetas = {0: "facil", 1: "media", 2: "dificil"}
-    return jsonify({"dificultad_sugerida": etiquetas.get(int(pred), "media")})
+    resultado = etiquetas.get(int(pred), "media")
+    
+    print(f"📊 Resultado final: {resultado}")
+    return jsonify({"dificultad_sugerida": resultado})
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "service": "RetoMate AI"})
+
+@app.route("/reiniciar-modelo", methods=["POST"])
+def reiniciar_modelo():
+    global modelo
+    modelo = entrenar_modelo()
+    return jsonify({"status": "success", "message": "Modelo reentrenado"})
 
 # ------------------------------
 # 5️⃣ Ejecutar servidor
 # ------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    print(f"🚀 Servidor iniciado en puerto {PORT}")
+    app.run(host="0.0.0.0", port=PORT, debug=False)
