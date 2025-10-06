@@ -8,9 +8,6 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.dummy import DummyClassifier
 import joblib
 
-# ------------------------------
-# 1️⃣ Cargar variables de entorno (Railway)
-# ------------------------------
 MONGO_URI = os.environ.get("MONGO_URI")
 MONGO_DB = os.environ.get("MONGO_DB", "RetoMate")
 MODEL_PATH = os.environ.get("MODEL_PATH", "modelo_dificultad.pkl")
